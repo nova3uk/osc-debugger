@@ -15,10 +15,8 @@ enum Task {
   SEND = 'SEND',
 }
 
-interface InteractiveAnswers extends Answers {
+interface TaskAnswer extends Answers {
   task: Task
-  port: number
-  address: string
 }
 
 interface MonitorArgs {
@@ -36,61 +34,140 @@ interface SendArgs {
 
 async function runInteractive(): Promise<void> {
   try {
-    const { task, port, address }: InteractiveAnswers = await inquirer.prompt([
+    // First, ask which tool to run
+    const { task }: TaskAnswer = await inquirer.prompt([
       {
-        type: 'list',
+        type: 'select',
         name: 'task',
-        message: 'What do you want to do?',
+        message: 'Which tool do you want to run?',
         choices: [
-          { value: Task.MONITOR, name: 'Monitor OSC messages' },
-          { value: Task.SEND, name: 'Send OSC messages' },
+          { value: Task.MONITOR, name: 'Monitor OSC' },
+          { value: Task.SEND, name: 'Send OSC' },
         ],
-      },
-      {
-        type: 'input',
-        name: 'port',
-        message: 'What port do you want to connect to?',
-        default: 666,
-        filter: (value: string) => {
-          const portNum = parseInt(value, 10)
-          if (Number.isNaN(portNum) || portNum < 1 || portNum > 65535) {
-            throw new Error('Port must be a number between 1 and 65535')
-          }
-          return portNum
-        },
-        validate: (value: string) => {
-          const portNum = parseInt(value, 10)
-          if (Number.isNaN(portNum)) {
-            return 'Port must be a valid number'
-          }
-          if (portNum < 1 || portNum > 65535) {
-            return 'Port must be between 1 and 65535'
-          }
-          return true
-        },
-      },
-      {
-        type: 'input',
-        name: 'address',
-        message: 'What host IP do you want to connect to?',
-        default: '0.0.0.0',
-        validate: (value: string) => {
-          if (!value || value.trim() === '') {
-            return 'IP address cannot be empty'
-          }
-          return true
-        },
       },
     ])
 
     if (task === Task.MONITOR) {
-      await monitor({ port, address, version: packageInfo.version })
+      // Prompt for Monitor-specific options
+      const { port, address } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'port',
+          message: 'What port do you want to listen on?',
+          default: '8888',
+          filter: (value: string) => {
+            const portNum = parseInt(value, 10)
+            if (Number.isNaN(portNum) || portNum < 1 || portNum > 65535) {
+              throw new Error('Port must be a number between 1 and 65535')
+            }
+            return portNum
+          },
+          validate: (value: string) => {
+            const portNum = parseInt(value, 10)
+            if (Number.isNaN(portNum)) {
+              return 'Port must be a valid number'
+            }
+            if (portNum < 1 || portNum > 65535) {
+              return 'Port must be between 1 and 65535'
+            }
+            return true
+          },
+        },
+        {
+          type: 'input',
+          name: 'address',
+          message: 'What IP address do you want to listen on?',
+          default: '0.0.0.0',
+          validate: (value: string) => {
+            if (!value || value.trim() === '') {
+              return 'IP address cannot be empty'
+            }
+            return true
+          },
+        },
+      ])
+
+      const { enableLogging } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'enableLogging',
+          message: 'Do you want to enable logging to file?',
+          default: false,
+        },
+      ])
+
+      let logFile: string | null = null
+      if (enableLogging) {
+        const { logFilePath } = await inquirer.prompt([
+          {
+            type: 'input',
+            name: 'logFilePath',
+            message: 'Log file path (leave empty for default):',
+          },
+        ])
+        logFile = logFilePath || ''
+      }
+
+      await monitor({
+        port,
+        address,
+        version: packageInfo.version,
+        logFile,
+      })
     } else if (task === Task.SEND) {
-      await send({ port, address, version: packageInfo.version })
+      // Prompt for Send-specific options
+      const { port: sendPort, address: sendAddress } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'port',
+          message: 'What port do you want to send to?',
+          default: '8888',
+          filter: (value: string) => {
+            const portNum = parseInt(value, 10)
+            if (Number.isNaN(portNum) || portNum < 1 || portNum > 65535) {
+              throw new Error('Port must be a number between 1 and 65535')
+            }
+            return portNum
+          },
+          validate: (value: string) => {
+            const portNum = parseInt(value, 10)
+            if (Number.isNaN(portNum)) {
+              return 'Port must be a valid number'
+            }
+            if (portNum < 1 || portNum > 65535) {
+              return 'Port must be between 1 and 65535'
+            }
+            return true
+          },
+        },
+        {
+          type: 'input',
+          name: 'address',
+          message: 'What IP address do you want to send to?',
+          default: '0.0.0.0',
+          validate: (value: string) => {
+            if (!value || value.trim() === '') {
+              return 'IP address cannot be empty'
+            }
+            return true
+          },
+        },
+      ])
+
+      await send({
+        port: sendPort,
+        address: sendAddress,
+        version: packageInfo.version,
+      })
     } else {
       throw new TypeError(`Unknown task: ${task}`)
     }
   } catch (err) {
+    // Handle user cancellation gracefully (Ctrl+C)
+    if (err instanceof Error && (err.name === 'ExitPromptError' || err.message.includes('force closed'))) {
+      console.log('\nCancelled.'.gray)
+      process.exit(0)
+    }
     if (err instanceof Error) {
       console.error(`Error: ${err.message}`.red)
       if (err.stack) {
@@ -256,34 +333,16 @@ yargs(hideBin(process.argv))
       }
     }
   )
-  .command(
-    '$0',
-    false,
-    () => {},
-    () => {
-      runInteractive().catch((err) => {
-        console.error('An error occurred:'.red)
-        if (err instanceof Error) {
-          console.error(err.message)
-          if (err.stack) {
-            console.error(err.stack)
-          }
-        } else {
-          console.error(String(err))
-        }
-        process.exit(1)
-      })
-    }
-  )
   .version(packageInfo.version)
   .help(false)
   .alias('h', 'help')
   .showHelpOnFail(false)
   .command(
-    '*',
+    '$0',
     false,
     () => {},
     (argv) => {
+      // Handle help and version flags
       if (argv.help || argv.h) {
         console.log(
           `OSC Debugger\n\n`.yellow.bold +
@@ -314,6 +373,29 @@ yargs(hideBin(process.argv))
         console.log(packageInfo.version)
         process.exit(0)
       }
+      // Check if there's an unknown command in positional args
+      const args = argv._ || []
+      if (args.length > 0 && args[0] && typeof args[0] === 'string' && args[0] !== '$0') {
+        console.error(`Unknown command: ${args[0]}`.red)
+        console.log(
+          `\nRun 'osc-debugger --help' for usage information.\n`.gray
+        )
+        process.exit(1)
+      }
+      // No command provided, run interactive mode
+      runInteractive().catch((err) => {
+        console.error('An error occurred:'.red)
+        if (err instanceof Error) {
+          console.error(err.message)
+          if (err.stack) {
+            console.error(err.stack)
+          }
+        } else {
+          console.error(String(err))
+        }
+        process.exit(1)
+      })
     }
   )
+  .strict(false)
   .parse()
